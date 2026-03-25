@@ -1,58 +1,59 @@
-# We define the version once at the top for easy updates
-ARG FRAPPE_BRANCH=version-16
-FROM frappe/base:${FRAPPE_BRANCH} AS builder
+# Stage 1: Builder
+FROM frappe/base:version-16 AS builder
 
-ARG FRAPPE_PATH=https://github.com/frappe/frappe
-ARG FRAPPE_BRANCH=version-16
-
+# Change to root user to install build dependencies
 USER root
-# Install build-time dependencies only. These won't be in the final image.
 RUN apt-get update && apt-get install -y \
-    git \
-    jq \
-    pkg-config \
-    build-essential \
-    libmariadb-dev \
+    gcc \
+    g++ \
+    make \
     python3-dev \
-    && rm -rf /var/lib/apt/lists/*
+    libffi-dev \
+    libssl-dev \
+    pkg-config \
+    libmariadb-dev \
+    cron \
+ && rm -rf /var/lib/apt/lists/*
 
+# Switch back to frappe user for bench commands
 USER frappe
-WORKDIR /home/frappe
 
-# Copy the app list. This is where you add/remove apps.
-COPY --chown=frappe:frappe apps.json /home/frappe/apps.json
-
-# Step 1: Initialize the bench. We skip assets to speed up the build.
+# Init bench, skipping redis config generation and assets compilation initially
 RUN bench init \
-    --frappe-branch=${FRAPPE_BRANCH} \
-    --frappe-path=${FRAPPE_PATH} \
-    --apps_path=/home/frappe/apps.json \
-    --no-procfile \
-    --no-backups \
-    --skip-redis-config-generation \
     --skip-assets \
+    --skip-redis-config-generation \
+    --frappe-path https://github.com/frappe/frappe \
+    --frappe-branch version-16 \
     /home/frappe/frappe-bench
 
-# Step 2: Pre-compile JS/CSS. This makes the container start instantly in production. [cite: 2]
-RUN cd /home/frappe/frappe-bench && \
-    bench build --app helpdesk
-
-# Step 3: Clean up. We delete .git folders to reduce image size by ~40%. [cite: 3]
-RUN find /home/frappe/frappe-bench/apps -mindepth 1 -path "*/.git" | xargs rm -rf
-
-# Final Stage: The slim production image. [cite: 2, 3]
-FROM frappe/base:${FRAPPE_BRANCH}
-
-USER frappe
-# Copy ONLY the bench folder from the builder. [cite: 2, 3]
-COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
 WORKDIR /home/frappe/frappe-bench
 
-# Persistent data locations [cite: 1]
-VOLUME [ \
-    "/home/frappe/frappe-bench/sites", \
-    "/home/frappe/frappe-bench/sites/assets", \
-    "/home/frappe/frappe-bench/logs" \
-    ]
+# Copy apps list to image
+COPY apps.json /opt/frappe/apps.json
 
-CMD ["/bin/bash"]
+# Parse apps.json and run bench get-app for each app, omitting resolve-deps
+RUN python3 -c "import json, subprocess; \
+apps = json.load(open('/opt/frappe/apps.json')); \
+[subprocess.run(['bench', 'get-app', app['url'], '--branch', app['branch']], check=True) for app in apps]"
+
+# Build assets for all installed apps
+RUN bench build
+
+# Strip .git folders to significantly reduce final image size
+RUN find /home/frappe/frappe-bench/apps -type d -name ".git" -exec rm -rf {} +
+
+# Stage 2: Final Image
+FROM frappe/base:version-16
+
+USER frappe
+
+# Copy built frappe-bench directory from the builder stage
+COPY --from=builder /home/frappe/frappe-bench /home/frappe/frappe-bench
+
+WORKDIR /home/frappe/frappe-bench
+
+# Pre-create logs directory to guarantee proper ownership by frappe user before volume mounting
+RUN mkdir -p /home/frappe/logs
+
+# Declare external volumes for persistent data (sites, assets, and logs)
+VOLUME [ "/home/frappe/frappe-bench/sites", "/home/frappe/frappe-bench/logs", "/home/frappe/frappe-bench/sites/assets" ]
