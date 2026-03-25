@@ -1,0 +1,9 @@
+services:
+  helpdesk-image:
+    image: ${HELPDESK_IMAGE:-ghcr.io/example/frappe-helpdesk:15.0.0-helpdesk.1}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        FRAPPE_PATH: ${FRAPPE_PATH:-https://github.com/frappe/frappe}
+        FRAPPE_BRANCH: ${FRAPPE_BRANCH:-version-15}

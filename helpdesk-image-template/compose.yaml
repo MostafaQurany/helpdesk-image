@@ -1,0 +1,74 @@
+services:
+  # This service builds your custom image. Run 'docker compose build' to trigger. [cite: 1]
+  helpdesk-image:
+    image: my-helpdesk:16
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        FRAPPE_PATH: https://github.com/frappe/frappe
+        FRAPPE_BRANCH: version-16
+
+  # The Python Web Server (Gunicorn/Werkzeug) [cite: 1]
+  helpdesk-web:
+    image: my-helpdesk:16
+    depends_on:
+      db:
+        condition: service_healthy
+      redis-cache:
+        condition: service_started
+    command:
+      - bench
+      - serve
+      - --port
+      - "8000"
+    ports:
+      - "8000:8000" # Access via http://localhost:8000
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+
+  # Background Job Worker. Required for email fetching and ticket automation. [cite: 1]
+  helpdesk-worker:
+    image: my-helpdesk:16
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - bench
+      - worker
+      - --queue
+      - default,short,long
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+
+  # MariaDB Database [cite: 1]
+  db:
+    image: mariadb:10.6
+    environment:
+      MARIADB_ROOT_PASSWORD: root # Change this for production!
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 10s
+      retries: 10
+      timeout: 5s
+    volumes:
+      - db-data:/var/lib/mysql
+
+  # Redis instances for Caching, Tasks, and Real-time updates [cite: 1]
+  redis-cache:
+    image: redis:7-alpine
+  redis-queue:
+    image: redis:7-alpine
+  redis-socketio:
+    image: redis:7-alpine
+
+volumes:
+  db-data:
+  sites:
+  logs:
+
+networks:
+  default:
+    name: helpdesk-network
